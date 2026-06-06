@@ -1,0 +1,39 @@
+# weekly_report.yml
+# ------------------
+# Sends the Pixel Bento Tokyo Events Radar every Sunday at 18:00 JST.
+# JST is UTC+9, so 18:00 JST = 09:00 UTC.
+#
+# Credentials are stored as GitHub Secrets and injected as env vars:
+#   GMAIL_SENDER        — sending Gmail address
+#   GMAIL_RECIPIENT     — comma-separated recipient address(es)
+#   GMAIL_APP_PASSWORD  — Gmail App Password (16 chars, spaces OK)
+
+name: Weekly Tokyo Events Radar
+
+on:
+  schedule:
+    - cron: '0 9 * * 0'   # 09:00 UTC Sunday = 18:00 JST Sunday
+  workflow_dispatch:        # allow manual runs from the Actions tab
+
+jobs:
+  send-report:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run send_email.py
+        run: python send_email.py
+        env:
+          GMAIL_SENDER:       ${{ secrets.GMAIL_SENDER }}
+          GMAIL_RECIPIENT:    ${{ secrets.GMAIL_RECIPIENT }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
