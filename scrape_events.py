@@ -26,12 +26,10 @@ Events with no extractable date float to the bottom of the main list.
 """
 
 import re
-import sys
 import requests
-import xml.etree.ElementTree as ET
+import feedparser
 from bs4 import BeautifulSoup
 from datetime import date, timedelta
-from email.utils import parsedate_to_datetime
 
 try:
     from deep_translator import GoogleTranslator
@@ -294,69 +292,44 @@ def get_m2_events():
 
 # ── RSS parser ─────────────────────────────────────────────────────────────────
 
-def _parse_rss_item_date(item):
-    """
-    Try to extract a publication date from an RSS/RDF item.
-    Handles pubDate (RSS 2.0) and dc:date (RSS 1.0/RDF).
-    """
-    # RSS 2.0
-    el = item.find('pubDate')
-    if el is not None and el.text:
-        try:
-            return parsedate_to_datetime(el.text.strip()).date()
-        except Exception:
-            pass
-    # RSS 1.0 / Dublin Core
-    el = item.find('{http://purl.org/dc/elements/1.1/}date')
-    if el is not None and el.text:
-        try:
-            # dc:date is ISO 8601: 2026-06-04T10:00:00+09:00
-            return date.fromisoformat(el.text.strip()[:10])
-        except Exception:
-            pass
-    return None
-
-
 def get_rss_events(feed_url, source_name, event_keywords_only=True, is_kuji=False):
     """
     Fetch an RSS or RDF feed and return relevant items published in the last 14 days.
+    Uses feedparser, which handles malformed XML, RSS 1.0/2.0, and Atom gracefully.
 
     - event_keywords_only: when True, skip articles that don't mention events.
-      Set to False only for very niche sources where all content is relevant.
     - is_kuji: route items into the 一番くじ section and apply the kuji blocklist.
     """
     events = []
     cutoff = TODAY - timedelta(days=14)
 
     try:
-        r = requests.get(feed_url, headers=HEADERS, timeout=15)
-        r.raise_for_status()
+        feed = feedparser.parse(feed_url)
 
-        root = ET.fromstring(r.content)
+        if feed.bozo and not feed.entries:
+            print(f'[RSS:{source_name}] Feed unreadable: {feed.bozo_exception}')
+            return events
 
-        # Both RSS 2.0 (<rss><channel><item>) and RDF (<rdf:RDF><item>) use <item>
-        items = root.findall('.//item')
-
-        for item in items:
-            def tag(name, default=''):
-                el = item.find(name)
-                return el.text.strip() if el is not None and el.text else default
-
-            title_ja = tag('title')
-            # RDF items use rdf:about attribute; RSS 2.0 uses <link>
-            link_el = item.find('link')
-            if link_el is not None and link_el.text:
-                url = link_el.text.strip()
-            else:
-                url = item.get('{http://www.w3.org/1999/02/22-rdf-syntax-ns#}about', '')
+        for entry in feed.entries:
+            title_ja = entry.get('title', '').strip()
+            url      = entry.get('link', '').strip()
 
             if not title_ja or not url:
                 continue
 
-            # Check publication date
-            pub_date = _parse_rss_item_date(item)
+            # Publication date — feedparser normalises to a time.struct_time
+            pub_date = None
+            for field in ('published_parsed', 'updated_parsed'):
+                t = entry.get(field)
+                if t:
+                    try:
+                        pub_date = date(t.tm_year, t.tm_mon, t.tm_mday)
+                        break
+                    except Exception:
+                        pass
+
             if pub_date and pub_date < cutoff:
-                continue  # too old
+                continue  # article too old
 
             # 一番くじ: apply niche blocklist
             if is_kuji and any(kw in title_ja for kw in KUJI_BLOCKLIST):
@@ -367,7 +340,7 @@ def get_rss_events(feed_url, source_name, event_keywords_only=True, is_kuji=Fals
                 if not any(kw in title_ja for kw in EVENT_KEYWORDS):
                     continue
 
-            # Try to extract an event date from the title text
+            # Try to extract an event date from the title
             event_date = extract_date(title_ja)
             if event_date and not in_window(event_date):
                 continue
