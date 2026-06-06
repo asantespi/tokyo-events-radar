@@ -38,6 +38,7 @@ except ImportError:
     _TRANSLATOR_OK = False
 
 from franchise_names import get_official_name
+from franchise_lookup import get_official_name_with_cache
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -113,47 +114,48 @@ def fmt_date(d):
 _PLACEHOLDER = 'PIXELBENTOFRANCHISE'
 
 
+def _machine_translate(text):
+    """Raw Google Translate call. Returns original text on failure."""
+    if not _TRANSLATOR_OK or not text:
+        return text
+    try:
+        result = GoogleTranslator(source='ja', target='fr').translate(text)
+        return result if result else text
+    except Exception:
+        return text
+
+
 def translate(text):
     """
-    Translate a Japanese title to French, using official franchise names
-    where known rather than machine-translating them.
+    Translate a Japanese article title to French, using the official
+    franchise name wherever possible.
 
-    Strategy:
-      1. Look for a known franchise in the text (franchise_names.py).
-      2. Swap it for a placeholder that Google Translate won't touch.
-      3. Machine-translate the rest to French.
-      4. Restore the official franchise name in place of the placeholder.
-      5. If no franchise found, machine-translate the whole title.
-      6. On any failure, return the original Japanese.
+    Lookup chain:
+      1. franchise_names.py   — hardcoded overrides (highest trust)
+      2. franchise_cache.json — Wikipedia results cached from prior runs
+      3. Wikipedia API        — live lookup, result stored in cache
+      4. Machine translation  — Google Translate on full title (last resort)
+
+    The franchise name is swapped for a placeholder before machine
+    translation so Google doesn't mangle it, then restored afterward.
     """
     if not text:
         return text
 
-    official = get_official_name(text)
-    working  = text
+    # Steps 1-3: try to find an official name
+    official, matched_ja = get_official_name_with_cache(text)
+    working = text
 
-    if official:
-        # Find the Japanese key that matched and replace it
-        from franchise_names import FRANCHISE_NAMES
-        for ja_name in sorted(FRANCHISE_NAMES.keys(), key=len, reverse=True):
-            if ja_name in working:
-                working = working.replace(ja_name, _PLACEHOLDER, 1)
-                break
+    if official and matched_ja:
+        working = working.replace(matched_ja, _PLACEHOLDER, 1)
 
-    if _TRANSLATOR_OK:
-        try:
-            translated = GoogleTranslator(source='ja', target='fr').translate(working)
-            translated = translated or working
-        except Exception:
-            translated = working
-    else:
-        translated = working
+    translated = _machine_translate(working)
 
     if official:
         if _PLACEHOLDER in translated:
             return translated.replace(_PLACEHOLDER, official)
         else:
-            # Placeholder was absorbed — prepend franchise name
+            # Placeholder absorbed by translator — prepend official name
             return f"{official} — {translated}"
 
     return translated

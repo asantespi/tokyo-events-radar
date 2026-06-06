@@ -37,3 +37,10 @@ jobs:
           GMAIL_SENDER:       ${{ secrets.GMAIL_SENDER }}
           GMAIL_RECIPIENT:    ${{ secrets.GMAIL_RECIPIENT }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+
+      - name: Commit updated franchise cache
+        run: |
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git add franchise_cache.json
+          git diff --staged --quiet || git commit -m "chore: update franchise name cache [skip ci]" && git push
