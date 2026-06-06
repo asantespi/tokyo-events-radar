@@ -53,11 +53,25 @@ FR_WEEKDAYS = {
 
 HEADERS = {'User-Agent': 'Mozilla/5.0 (compatible; PixelBentoRadar/1.0)'}
 
-# Keywords that make an RSS article event-relevant
+# Strong in-person event signals — all three groups must have at least one match.
+# These are specific enough that a game news or trailer article won't pass.
 EVENT_KEYWORDS = [
-    'イベント', '展示', '展覧会', 'ポップアップ', 'コラボ', '限定',
-    '開催', 'フェス', '祭', '記念', 'ショップ', 'カフェ', 'くじ',
-    '周年', 'リアル', 'グッズ', 'ストア', '展', 'フェア',
+    '展示会', '展覧会', 'ポップアップストア', 'ポップアップショップ',
+    'リアルイベント', '体験会', 'コラボカフェ', 'アニメイトカフェ',
+    '期間限定ショップ', 'コラボショップ', '限定ショップ', '物販イベント',
+    '同人誌即売会', 'リアル店舗', 'ポップアップ', '会場限定',
+]
+
+# Domains whose articles are always excluded (too vague, paywalled, etc.)
+DOMAIN_BLOCKLIST = [
+    'timeout.jp', 'timeout.com',
+]
+
+# Keywords in the article title indicating the event is NOT in Japan
+NON_JAPAN_KEYWORDS = [
+    '韓国', 'ソウル', 'Korea', 'Seoul',
+    '中国', '台湾', 'Taiwan', '香港', 'Hong Kong',
+    'アジア', 'Asia',   # catches "in Asia" pop-ups outside Japan
 ]
 
 # 一番くじ franchises to exclude (off-niche)
@@ -317,6 +331,14 @@ def get_rss_events(feed_url, source_name, event_keywords_only=True, is_kuji=Fals
             if not title_ja or not url:
                 continue
 
+            # Skip blocked domains (e.g. Time Out — articles are roundups, not events)
+            if any(domain in url for domain in DOMAIN_BLOCKLIST):
+                continue
+
+            # Skip events explicitly taking place outside Japan
+            if any(kw in title_ja for kw in NON_JAPAN_KEYWORDS):
+                continue
+
             # Publication date — feedparser normalises to a time.struct_time
             pub_date = None
             for field in ('published_parsed', 'updated_parsed'):
@@ -407,18 +429,10 @@ def get_all_events():
     print('· M2 ShotTriggers...')
     all_events += get_m2_events()
 
-    print('· Automaton...')
-    all_events += get_rss_events('https://automaton-media.com/feed/', 'Automaton')
-
-    print('· Game Watch...')
-    all_events += get_rss_events(
-        'https://game.watch.impress.co.jp/data/rss/1.0/gmw/feed.rdf', 'Game Watch')
-
-    print('· 4Gamer...')
-    all_events += get_rss_events('https://www.4gamer.net/rss/rss.shtml', '4Gamer')
-
-    print('· Game*Spark...')
-    all_events += get_rss_events('https://www.gamespark.jp/rss/index.rdf', 'Game*Spark')
+    # Note: general gaming RSS feeds (Automaton, Game Watch, 4Gamer, Game*Spark)
+    # were removed — they publish game news, not in-person event listings,
+    # and produced too many false positives. Google News targeted queries
+    # are used instead for event discovery.
 
     print('· Google News — expositions...')
     all_events += get_google_news_events('東京 展覧会 ゲーム アニメ 2026', 'Google News')
@@ -443,11 +457,11 @@ def get_all_events():
     dated   = sorted([e for e in all_events if e['date']], key=lambda e: e['date'])
     undated = [e for e in all_events if not e['date']]
 
-    kuji_dated   = sorted([e for e in kuji_events if e['date']], key=lambda e: e['date'])
-    kuji_undated = [e for e in kuji_events if not e['date']]
+    # 一番くじ: only show items with a confirmed sale date
+    kuji_dated = sorted([e for e in kuji_events if e['date']], key=lambda e: e['date'])
 
     main = dated + undated
-    kuji = kuji_dated + kuji_undated
+    kuji = kuji_dated  # undated kuji items are dropped
 
     print(f'\n✓ {len(main)} événements · {len(kuji)} tirages 一番くじ')
     return main, kuji

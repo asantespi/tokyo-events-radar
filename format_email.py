@@ -277,8 +277,7 @@ def build_html(main_events, kuji_events):
         <tr>
           <td style="padding:16px 44px 28px;border-top:1px solid #eee;">
             <p style="margin:0;font-size:11px;color:#ccc;line-height:1.7;">
-              Sources : Tokyo Game Dungeon · Tokyo Game Show · M2 ShotTriggers ·
-              Automaton · Game Watch · 4Gamer · Game*Spark · Google News JP<br>
+              Sources : Tokyo Game Dungeon · Tokyo Game Show · M2 ShotTriggers · Google News JP<br>
               Généré le {gen_str}
             </p>
           </td>
