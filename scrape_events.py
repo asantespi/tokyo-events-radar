@@ -111,9 +111,6 @@ def fmt_date(d):
     return f"{FR_WEEKDAYS[d.weekday()]} {d.day} {FR_MONTHS[d.month]} {d.year}"
 
 
-_PLACEHOLDER = 'PIXELBENTOFRANCHISE'
-
-
 def _machine_translate(text):
     """Raw Google Translate call. Returns original text on failure."""
     if not _TRANSLATOR_OK or not text:
@@ -123,6 +120,11 @@ def _machine_translate(text):
         return result if result else text
     except Exception:
         return text
+
+
+# Japanese punctuation/particles to strip from the remainder after removing
+# the franchise name
+_JP_STRIP = '「』【〔（）』」』。、！？　：: 』»«　'
 
 
 def translate(text):
@@ -136,29 +138,23 @@ def translate(text):
       3. Wikipedia API        — live lookup, result stored in cache
       4. Machine translation  — Google Translate on full title (last resort)
 
-    The franchise name is swapped for a placeholder before machine
-    translation so Google doesn't mangle it, then restored afterward.
+    The franchise name is removed from the text before translation so
+    Google Translate never sees it (no placeholder — avoids mangling).
+    The official name is prepended to the translated remainder.
     """
     if not text:
         return text
 
-    # Steps 1-3: try to find an official name
     official, matched_ja = get_official_name_with_cache(text)
-    working = text
 
     if official and matched_ja:
-        working = working.replace(matched_ja, _PLACEHOLDER, 1)
-
-    translated = _machine_translate(working)
-
-    if official:
-        if _PLACEHOLDER in translated:
-            return translated.replace(_PLACEHOLDER, official)
+        remainder = text.replace(matched_ja, '', 1).strip(_JP_STRIP).strip()
+        if remainder:
+            return f"{official} — {_machine_translate(remainder)}"
         else:
-            # Placeholder absorbed by translator — prepend official name
-            return f"{official} — {translated}"
+            return official
 
-    return translated
+    return _machine_translate(text)
 
 
 def extract_date(text):
