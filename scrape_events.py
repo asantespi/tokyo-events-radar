@@ -13,7 +13,7 @@ Aggregates Tokyo gaming and pop-culture events from multiple sources:
     - Game Watch          (game.watch.impress.co.jp)
     - 4Gamer              (4gamer.net)
     - Game*Spark          (gamespark.jp)
-    - Google News JP      (5 targeted queries, 30-day lookback)
+    - Google News JP      (6 targeted queries, 30-day lookback)
 
   一番くじ (separate section, own Google News query):
     - Filtered to gaming/anime franchises only
@@ -65,6 +65,16 @@ EVENT_KEYWORDS = [
     '同人誌即売会', 'リアル店舗', 'ポップアップ', '会場限定',
     'EXPO', '周年', '記念展', 'アニバーサリー',
 ]
+
+# Major Japanese game publishers/studios that regularly run their own branded
+# pop-up stores/cafes — generic anime+game queries rank these too low when the
+# franchise itself has no anime tie-in (e.g. Final Fantasy X merch pop-up).
+GAME_PUBLISHERS = [
+    'スクウェアエニックス', '任天堂', 'Nintendo', 'カプコン', 'Capcom',
+    'バンダイナムコ', 'セガ', 'Sega', 'コナミ', 'Konami',
+    'アトラス', 'Atlus', 'コーエーテクモ', 'スクエニ',
+]
+GAME_PUBLISHER_QUERY = ' OR '.join(GAME_PUBLISHERS) + ' ポップアップ 東京'
 
 # Domains whose articles are always excluded (too vague, paywalled, etc.)
 DOMAIN_BLOCKLIST = [
@@ -499,6 +509,9 @@ def get_all_events():
 
     print('· Google News — anniversaires de studios...')
     all_events += get_google_news_events('アニメ スタジオ 周年 展覧会 東京', 'Google News')
+
+    print('· Google News — pop-ups éditeurs de jeux...')
+    all_events += get_google_news_events(GAME_PUBLISHER_QUERY, 'Google News')
 
     print('· Google News — 一番くじ...')
     kuji_raw = get_google_news_events('一番くじ 2026', 'Google News', is_kuji=True)
