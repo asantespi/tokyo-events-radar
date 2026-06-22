@@ -13,7 +13,7 @@ Aggregates Tokyo gaming and pop-culture events from multiple sources:
     - Game Watch          (game.watch.impress.co.jp)
     - 4Gamer              (4gamer.net)
     - Game*Spark          (gamespark.jp)
-    - Google News JP      (4 targeted queries)
+    - Google News JP      (5 targeted queries, 30-day lookback)
 
   一番くじ (separate section, own Google News query):
     - Filtered to gaming/anime franchises only
@@ -63,6 +63,7 @@ EVENT_KEYWORDS = [
     'リアルイベント', '体験会', 'コラボカフェ', 'アニメイトカフェ',
     '期間限定ショップ', 'コラボショップ', '限定ショップ', '物販イベント',
     '同人誌即売会', 'リアル店舗', 'ポップアップ', '会場限定',
+    'EXPO', '周年', '記念展', 'アニバーサリー',
 ]
 
 # Domains whose articles are always excluded (too vague, paywalled, etc.)
@@ -344,16 +345,20 @@ def get_m2_events():
 
 # ── RSS parser ─────────────────────────────────────────────────────────────────
 
-def get_rss_events(feed_url, source_name, event_keywords_only=True, is_kuji=False):
+def get_rss_events(feed_url, source_name, event_keywords_only=True, is_kuji=False, lookback_days=14):
     """
-    Fetch an RSS or RDF feed and return relevant items published in the last 14 days.
-    Uses feedparser, which handles malformed XML, RSS 1.0/2.0, and Atom gracefully.
+    Fetch an RSS or RDF feed and return relevant items published in the last
+    `lookback_days` days. Uses feedparser, which handles malformed XML,
+    RSS 1.0/2.0, and Atom gracefully.
 
     - event_keywords_only: when True, skip articles that don't mention events.
     - is_kuji: route items into the 一番くじ section and apply the kuji blocklist.
+    - lookback_days: general RSS feeds use the default 14 days; Google News
+      queries use a longer window (see get_google_news_events) since studio
+      anniversary exhibitions are often announced weeks before ticket sales open.
     """
     events = []
-    cutoff = TODAY - timedelta(days=14)
+    cutoff = TODAY - timedelta(days=lookback_days)
 
     try:
         feed = feedparser.parse(feed_url)
@@ -420,12 +425,20 @@ def get_rss_events(feed_url, source_name, event_keywords_only=True, is_kuji=Fals
 
 
 def get_google_news_events(query, source_label, is_kuji=False):
-    """Wrap get_rss_events for a Google News JP search query."""
+    """
+    Wrap get_rss_events for a Google News JP search query.
+
+    Uses a 30-day lookback instead of the RSS default of 14 — studio
+    anniversary exhibitions (e.g. MAPPA EXPO) are often covered by press
+    weeks before the ticket platform opens advance sales, and a 14-day
+    window was dropping those articles by the time the radar ran.
+    """
     encoded = requests.utils.quote(query)
     url = f'https://news.google.com/rss/search?q={encoded}&hl=ja&gl=JP&ceid=JP:ja'
     # Google News is already query-filtered, so event_keywords_only=False for kuji,
     # True for general queries (catches edge cases in broad searches).
-    return get_rss_events(url, source_label, event_keywords_only=not is_kuji, is_kuji=is_kuji)
+    return get_rss_events(url, source_label, event_keywords_only=not is_kuji, is_kuji=is_kuji,
+                           lookback_days=30)
 
 
 # ── Deduplication ──────────────────────────────────────────────────────────────
@@ -483,6 +496,9 @@ def get_all_events():
 
     print('· Google News — événements 同人...')
     all_events += get_google_news_events('同人 イベント 東京 2026', 'Google News')
+
+    print('· Google News — anniversaires de studios...')
+    all_events += get_google_news_events('アニメ スタジオ 周年 展覧会 東京', 'Google News')
 
     print('· Google News — 一番くじ...')
     kuji_raw = get_google_news_events('一番くじ 2026', 'Google News', is_kuji=True)
