@@ -462,18 +462,66 @@ def get_google_news_events(query, source_label, is_kuji=False):
 
 # ── Deduplication ──────────────────────────────────────────────────────────────
 
+# Above this character-bigram Jaccard overlap, two titles are considered the
+# same underlying story. Headlines about the same press release vary in
+# emphasis (venue vs. bonus item vs. general announcement) as much as in
+# wording, so a straight sequence-similarity ratio (difflib) under-matches —
+# bigram overlap is more tolerant of reordered/inserted clauses while still
+# leaving genuinely unrelated events (different franchise, different venue)
+# well below the threshold.
+_TITLE_SIMILARITY_THRESHOLD = 0.22
+
+_TITLE_NORMALIZE_RE = re.compile(r'[「」『』【】〔〕（）()\[\]！!？?。、，,：:;　\s]+')
+
+
+def _normalize_title(title_ja):
+    """Strip punctuation/whitespace so wording differences don't block matches."""
+    return _TITLE_NORMALIZE_RE.sub('', title_ja)
+
+
+def _bigrams(s):
+    return {s[i:i + 2] for i in range(len(s) - 1)}
+
+
+def _title_similarity(a, b):
+    set_a, set_b = _bigrams(a), _bigrams(b)
+    if not set_a or not set_b:
+        return 0.0
+    return len(set_a & set_b) / len(set_a | set_b)
+
+
 def deduplicate(events):
-    """Remove duplicates by URL (ignoring query params) and title prefix."""
-    seen_urls   = set()
-    seen_titles = set()
+    """
+    Remove duplicates by URL (ignoring query params) and by near-identical
+    title. Google News in particular surfaces the same announcement from many
+    outlets (Yahoo, Famitsu, Mynavi, ...), each with its own rephrased
+    headline — an exact-prefix match misses those, so titles are compared
+    with a fuzzy bigram-overlap ratio instead. Matches are only considered
+    against other items sharing the same event date (or both undated) to
+    avoid cross-matching unrelated events that happen to share generic
+    wording.
+    """
+    seen_urls = set()
+    kept = []  # list of (normalized_title, date) for fuzzy comparison
     out = []
     for e in events:
-        url_key   = e['url'].split('?')[0].rstrip('/')
-        title_key = e['title_ja'][:25].strip()
-        if url_key in seen_urls or title_key in seen_titles:
+        url_key = e['url'].split('?')[0].rstrip('/')
+        if url_key in seen_urls:
             continue
+
+        norm = _normalize_title(e['title_ja'])
+        is_dup = False
+        for kept_norm, kept_date in kept:
+            if kept_date != e['date']:
+                continue
+            if _title_similarity(norm, kept_norm) >= _TITLE_SIMILARITY_THRESHOLD:
+                is_dup = True
+                break
+        if is_dup:
+            continue
+
         seen_urls.add(url_key)
-        seen_titles.add(title_key)
+        kept.append((norm, e['date']))
         out.append(e)
     return out
 
