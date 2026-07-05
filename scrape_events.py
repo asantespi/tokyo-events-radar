@@ -85,6 +85,17 @@ GAME_PUBLISHER_GROUPS = [
 ]
 GAME_PUBLISHER_QUERIES = [' OR '.join(group) + ' ポップアップ 東京' for group in GAME_PUBLISHER_GROUPS]
 
+# Tokusatsu franchises (Ultraman, Kamen Rider, Godzilla, Super Sentai, ...) are
+# covered by press using words like ウルトラマン/円谷プロ/特撮 — never ゲーム or
+# アニメ — so the general queries above never surface them. Same OR-group
+# pattern as GAME_PUBLISHER_GROUPS, split across two query intents
+# (exhibitions vs. pop-up stores) instead of one long query.
+TOKUSATSU_GROUP = ['ウルトラマン', '仮面ライダー', 'ゴジラ', 'ガメラ', 'スーパー戦隊', '特撮', '円谷プロ']
+TOKUSATSU_QUERIES = [
+    ' OR '.join(TOKUSATSU_GROUP) + ' 展覧会 東京',
+    ' OR '.join(TOKUSATSU_GROUP) + ' ポップアップ 東京',
+]
+
 # Domains whose articles are always excluded (too vague, paywalled, etc.)
 DOMAIN_BLOCKLIST = [
     'timeout.jp', 'timeout.com',
@@ -362,6 +373,115 @@ def get_m2_events():
     return events
 
 
+def get_parco_events():
+    """
+    Scrape Shibuya PARCO's event listing (covers PARCO MUSEUM TOKYO and the
+    building's other in-house galleries/pop-up spaces).
+
+    The listing mixes every category the mall runs (fashion, food, art,
+    games, anime, tokusatsu...), so events are only kept when they match a
+    known franchise in franchise_names.py — the same curated list used
+    elsewhere for translation, reused here as the relevance filter to avoid
+    pulling in unrelated art/fashion exhibitions. Many exhibition titles are
+    stylised English/original names with no Japanese franchise word in them
+    (e.g. "SHUWATCH with U" for an Ultraman show), so the franchise check
+    falls back to the event's detail page body when the listing title alone
+    doesn't match — the detail page always names the source franchise in
+    its description.
+
+    Listings show a start–end date range rather than a single date, and
+    since exhibitions run for weeks an event may already be underway by the
+    time this runs — so the window check tests for range overlap rather
+    than requiring the start date itself to be in the future.
+    """
+    events = []
+    seen_urls = set()
+    page = 1
+    while page <= 8:  # site has ~2 pages at any time; generous safety cap
+        try:
+            r = requests.get(f'https://shibuya.parco.jp/event/?&page={page}',
+                              headers=HEADERS, timeout=15)
+            r.raise_for_status()
+        except Exception as e:
+            print(f'[PARCO] Error on page {page}: {e}')
+            break
+
+        soup = BeautifulSoup(r.text, 'html.parser')
+        cards = soup.select('a[href*="event/detail"]')
+        if not cards:
+            break
+
+        for card in cards:
+            title_el = card.select_one('.c-event-entry__title')
+            date_el  = card.select_one('.c-event-entry__date')
+            if not title_el or not date_el:
+                continue
+
+            title_ja = title_el.get_text(strip=True)
+
+            href = card.get('href', '')
+            url = 'https://shibuya.parco.jp' + href if href.startswith('/') else href
+            if url in seen_urls:
+                continue
+
+            dm = re.search(
+                r'(\d{4})\.(\d{1,2})\.(\d{1,2})\s*-\s*(\d{4})\.(\d{1,2})\.(\d{1,2})',
+                date_el.get_text(strip=True))
+            if not dm:
+                continue
+            try:
+                start_date = date(int(dm.group(1)), int(dm.group(2)), int(dm.group(3)))
+                end_date   = date(int(dm.group(4)), int(dm.group(5)), int(dm.group(6)))
+            except ValueError:
+                continue
+
+            # Range overlap with the radar window, not in_window(start_date) —
+            # a multi-week exhibition may have already opened.
+            if end_date < TODAY or start_date > WINDOW_END:
+                continue
+
+            official = get_official_name(title_ja)
+            if not official:
+                # Title alone doesn't name the franchise (e.g. stylised
+                # English titles) — check the detail page body instead.
+                try:
+                    dr = requests.get(url, headers=HEADERS, timeout=15)
+                    dr.raise_for_status()
+                    detail_soup = BeautifulSoup(dr.text, 'html.parser')
+                    # Scoped to the description block — the page footer lists
+                    # every in-house tenant (Nintendo TOKYO, Pokémon Center,
+                    # ...) on every event page, which false-matches if scanned.
+                    desc_el = detail_soup.select_one('.event-post__textbox')
+                    detail_text = desc_el.get_text(' ', strip=True) if desc_el else ''
+                    official = get_official_name(detail_text)
+                except Exception as e:
+                    print(f'[PARCO] Error fetching detail page {url}: {e}')
+
+            if not official:
+                continue  # not a recognised gaming/anime/tokusatsu franchise
+
+            seen_urls.add(url)
+            floor_el = card.select_one('.c-event-entry__floor')
+            location = f'{floor_el.get_text(strip=True)} · Shibuya PARCO' \
+                if floor_el else 'Shibuya PARCO'
+            title_fr = official if official == title_ja else f'{official} — {title_ja}'
+
+            events.append(make_event(
+                title_ja=title_ja,
+                title_fr=title_fr,
+                url=url,
+                source='Shibuya PARCO',
+                date_obj=start_date,
+                location=location,
+                description=f"Jusqu'au {fmt_date(end_date)}",
+                is_structured=True,
+            ))
+
+        page += 1
+
+    return events
+
+
 # ── RSS parser ─────────────────────────────────────────────────────────────────
 
 def get_rss_events(feed_url, source_name, event_keywords_only=True, is_kuji=False, lookback_days=14):
@@ -496,13 +616,30 @@ def deduplicate(events):
     title. Google News in particular surfaces the same announcement from many
     outlets (Yahoo, Famitsu, Mynavi, ...), each with its own rephrased
     headline — an exact-prefix match misses those, so titles are compared
-    with a fuzzy bigram-overlap ratio instead. Matches are only considered
-    against other items sharing the same event date (or both undated) to
-    avoid cross-matching unrelated events that happen to share generic
-    wording.
+    with a fuzzy bigram-overlap ratio instead. Matches are normally only
+    considered against other items sharing the same event date (or both
+    undated) to avoid cross-matching unrelated events that happen to share
+    generic wording.
+
+    Structured events (direct scrapes like Tokyo Game Dungeon or Shibuya
+    PARCO) bypass that same-date requirement: they're the ground truth for
+    a given event, but Google News coverage of the exact same event often
+    extracts a different date from the headline (e.g. the closing date
+    instead of the opening date) or no date at all, so a strict date match
+    would miss the duplicate. Callers should add structured events before
+    Google News queries so the richer structured entry is kept and the
+    later News duplicate is the one dropped.
+
+    Structured titles are also short (e.g. "SHUWATCH with U" as displayed on
+    the venue's own listing) next to a full News headline that quotes it
+    verbatim but wraps it in a paragraph of context — bigram overlap gets
+    diluted by all that surrounding text and falls under the threshold even
+    though one title is literally contained in the other. So the bypass
+    case also accepts a straight substring match as equivalent to the
+    fuzzy-similarity match.
     """
     seen_urls = set()
-    kept = []  # list of (normalized_title, date) for fuzzy comparison
+    kept = []  # list of (normalized_title, date, is_structured) for fuzzy comparison
     out = []
     for e in events:
         url_key = e['url'].split('?')[0].rstrip('/')
@@ -511,17 +648,22 @@ def deduplicate(events):
 
         norm = _normalize_title(e['title_ja'])
         is_dup = False
-        for kept_norm, kept_date in kept:
-            if kept_date != e['date']:
+        for kept_norm, kept_date, kept_structured in kept:
+            bypass_date = kept_structured or e['is_structured']
+            if kept_date != e['date'] and not bypass_date:
                 continue
-            if _title_similarity(norm, kept_norm) >= _TITLE_SIMILARITY_THRESHOLD:
+            same_title = _title_similarity(norm, kept_norm) >= _TITLE_SIMILARITY_THRESHOLD
+            if not same_title and bypass_date:
+                shorter, longer = sorted([norm, kept_norm], key=len)
+                same_title = len(shorter) >= 4 and shorter in longer
+            if same_title:
                 is_dup = True
                 break
         if is_dup:
             continue
 
         seen_urls.add(url_key)
-        kept.append((norm, e['date']))
+        kept.append((norm, e['date'], e['is_structured']))
         out.append(e)
     return out
 
@@ -547,6 +689,13 @@ def get_all_events():
     print('· M2 ShotTriggers...')
     all_events += get_m2_events()
 
+    # Structured direct scrapes go in before any Google News queries: when a
+    # News article covers the same event, deduplicate() keeps the richer
+    # structured entry and drops the News duplicate — that only works if
+    # the structured entry is already in the list to compare against.
+    print('· Shibuya PARCO (galleries & pop-ups)...')
+    all_events += get_parco_events()
+
     # Note: general gaming RSS feeds (Automaton, Game Watch, 4Gamer, Game*Spark)
     # were removed — they publish game news, not in-person event listings,
     # and produced too many false positives. Google News targeted queries
@@ -569,6 +718,10 @@ def get_all_events():
 
     print('· Google News — pop-ups éditeurs de jeux...')
     for query in GAME_PUBLISHER_QUERIES:
+        all_events += get_google_news_events(query, 'Google News')
+
+    print('· Google News — tokusatsu (Ultraman, Kamen Rider, ...)...')
+    for query in TOKUSATSU_QUERIES:
         all_events += get_google_news_events(query, 'Google News')
 
     print('· Google News — 一番くじ...')
