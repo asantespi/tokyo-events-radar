@@ -18,8 +18,8 @@ Aggregates Tokyo gaming and pop-culture events from multiple sources:
   一番くじ (separate section, own Google News query):
     - Filtered to gaming/anime franchises only
 
-All non-French titles are auto-translated via Google Translate (free,
-no API key — uses the deep-translator library).
+All non-French titles are auto-translated to French via the DeepL API
+(key read from the DEEPL_API_KEY environment variable).
 
 Date window: today → last day of the month 4 months from now.
 Events with no extractable date float to the bottom of the main list.
@@ -31,14 +31,12 @@ import feedparser
 from bs4 import BeautifulSoup
 from datetime import date, timedelta
 
-try:
-    from deep_translator import GoogleTranslator
-    _TRANSLATOR_OK = True
-except ImportError:
-    _TRANSLATOR_OK = False
+import os
+import time
 
 from franchise_names import get_official_name
 from franchise_lookup import get_official_name_with_cache
+from article_dates import enrich_undated
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -142,15 +140,72 @@ def fmt_date(d):
     return f"{FR_WEEKDAYS[d.weekday()]} {d.day} {FR_MONTHS[d.month]} {d.year}"
 
 
+_DEEPL_KEY = os.environ.get('DEEPL_API_KEY', '').strip()
+# Free-plan keys end in ":fx" and use a different host than Pro keys.
+_DEEPL_URL = ('https://api-free.deepl.com/v2/translate' if _DEEPL_KEY.endswith(':fx')
+              else 'https://api.deepl.com/v2/translate')
+
+_translation_failures = 0
+_translation_cache = {}
+_deepl_disabled = False   # set on auth/quota errors so we stop hammering the API
+
+
 def _machine_translate(text):
-    """Raw Google Translate call. Returns original text on failure."""
-    if not _TRANSLATOR_OK or not text:
+    """
+    Translate Japanese -> French with the DeepL API.
+
+    Returns the original text on failure, but failures are logged loudly and
+    counted (see translation_failures()) so a broken translator can no longer
+    go unnoticed.
+    """
+    global _translation_failures, _deepl_disabled
+    if not text:
         return text
-    try:
-        result = GoogleTranslator(source='ja', target='fr').translate(text)
-        return result if result else text
-    except Exception:
+    if text in _translation_cache:
+        return _translation_cache[text]
+    if _deepl_disabled:
+        _translation_failures += 1
         return text
+    if not _DEEPL_KEY:
+        if _translation_failures == 0:
+            print('[translate] WARNING: DEEPL_API_KEY is not set — titles stay in Japanese')
+        _translation_failures += 1
+        return text
+
+    for attempt in range(3):
+        try:
+            r = requests.post(
+                _DEEPL_URL,
+                headers={'Authorization': f'DeepL-Auth-Key {_DEEPL_KEY}'},
+                data={'text': text, 'source_lang': 'JA', 'target_lang': 'FR'},
+                timeout=15,
+            )
+            if r.status_code == 429:          # too many requests — back off
+                time.sleep(2 * (attempt + 1))
+                continue
+            if r.status_code in (401, 403, 456):
+                reason = 'quota exhausted' if r.status_code == 456 else 'invalid API key'
+                print(f'[translate] WARNING: DeepL {reason} (HTTP {r.status_code}) '
+                      '— skipping translation for the rest of this run')
+                _deepl_disabled = True
+                break
+            r.raise_for_status()
+            result = r.json()['translations'][0]['text'].strip()
+            if result:
+                _translation_cache[text] = result
+                return result
+            break
+        except Exception as e:
+            print(f'[translate] WARNING: DeepL error ({e}) for: {text[:40]}')
+            time.sleep(1)
+
+    _translation_failures += 1
+    return text
+
+
+def translation_failures():
+    """Number of titles that could not be translated in this run."""
+    return _translation_failures
 
 
 # Japanese punctuation/particles to strip from the remainder after removing
@@ -167,10 +222,10 @@ def translate(text):
       1. franchise_names.py   — hardcoded overrides (highest trust)
       2. franchise_cache.json — Wikipedia results cached from prior runs
       3. Wikipedia API        — live lookup, result stored in cache
-      4. Machine translation  — Google Translate on full title (last resort)
+      4. Machine translation  — DeepL on full title (last resort)
 
     The franchise name is removed from the text before translation so
-    Google Translate never sees it (no placeholder — avoids mangling).
+    DeepL never sees it (no placeholder — avoids mangling).
     The official name is prepended to the translated remainder.
     """
     if not text:
@@ -191,7 +246,7 @@ def translate(text):
 def extract_date(text):
     """
     Try to extract an event date from Japanese text.
-    Recognises: YYYY年MM月DD日  and  MM月DD日 (assumes current/next year).
+    Recognises: YYYY年MM月DD日, MM月DD日 and M/D(曜) (assumes current/next year).
     Returns a date object or None.
     """
     # Full date: YYYY年MM月DD日
@@ -201,8 +256,11 @@ def extract_date(text):
             return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
         except ValueError:
             pass
-    # Short date: MM月DD日
-    m = re.search(r'(\d{1,2})月(\d{1,2})日', text)
+    # Short date: MM月DD日, or M/D followed by a weekday in brackets, e.g.
+    # "10/31(土)". The weekday is required for the slash form so that things
+    # like "1/2 scale" or "3/4" are not read as dates.
+    m = (re.search(r'(\d{1,2})月(\d{1,2})日', text)
+         or re.search(r'(?<![\d/])(\d{1,2})/(\d{1,2})\s*[（(][日月火水木金土祝][）)]', text))
     if m:
         try:
             d = date(TODAY.year, int(m.group(1)), int(m.group(2)))
@@ -216,7 +274,7 @@ def extract_date(text):
 
 def make_event(title_ja, url, source,
                date_obj=None, location='', price='', description='',
-               is_structured=False, is_kuji=False, title_fr=None):
+               is_structured=False, is_kuji=False, title_fr=None, pub_date=None):
     """Return a normalised event dict."""
     return {
         'title_ja':     title_ja,
@@ -230,6 +288,7 @@ def make_event(title_ja, url, source,
         'url':          url,
         'is_structured': is_structured,
         'is_kuji':      is_kuji,
+        'pub_date':     pub_date,   # article publication date (RSS only)
     }
 
 
@@ -555,6 +614,7 @@ def get_rss_events(feed_url, source_name, event_keywords_only=True, is_kuji=Fals
                 source=source_name,
                 date_obj=event_date,
                 is_kuji=is_kuji,
+                pub_date=pub_date,
             ))
 
     except Exception as e:
@@ -673,7 +733,7 @@ def deduplicate(events):
 def get_all_events():
     """
     Fetch from all sources and return two sorted lists:
-      main_events  — radar items (dated asc, then undated)
+      main_events  — radar items (dated asc, then undated non-Google-News)
       kuji_events  — 一番くじ items (dated asc, then TBA)
     """
     print(f'Fenêtre : {fmt_date(TODAY)} → {fmt_date(WINDOW_END)}')
@@ -731,9 +791,17 @@ def get_all_events():
     all_events  = deduplicate(all_events)
     kuji_events = deduplicate(kuji_raw)
 
-    # Sort: dated events ascending, undated float to bottom
+    # Headlines rarely carry the event date: read the articles for the rest.
+    # Done after dedup so each story is fetched once.
+    enrich_undated(all_events, TODAY, WINDOW_END)
+    enrich_undated(kuji_events, TODAY, WINDOW_END)
+
+    # Sort: dated events ascending, undated float to bottom.
+    # Undated Google News items are dropped: headlines without a date are
+    # mostly noise ("date à confirmer"). Undated entries from the direct
+    # scrapers (TGD, M2, PARCO, ...) are kept since they are curated sources.
     dated   = sorted([e for e in all_events if e['date']], key=lambda e: e['date'])
-    undated = [e for e in all_events if not e['date']]
+    undated = [e for e in all_events if not e['date'] and e['source'] != 'Google News']
 
     # 一番くじ: only show items with a confirmed sale date
     kuji_dated = sorted([e for e in kuji_events if e['date']], key=lambda e: e['date'])

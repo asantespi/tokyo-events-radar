@@ -7,6 +7,7 @@
 #   GMAIL_SENDER        — sending Gmail address
 #   GMAIL_RECIPIENT     — comma-separated recipient address(es)
 #   GMAIL_APP_PASSWORD  — Gmail App Password (16 chars, spaces OK)
+#   DEEPL_API_KEY       — DeepL API key (free keys end in :fx)
 
 name: Weekly Tokyo Events Radar
 
@@ -40,6 +41,7 @@ jobs:
           GMAIL_SENDER:       ${{ secrets.GMAIL_SENDER }}
           GMAIL_RECIPIENT:    ${{ secrets.GMAIL_RECIPIENT }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          DEEPL_API_KEY:      ${{ secrets.DEEPL_API_KEY }}
 
       - name: Commit updated franchise cache
         run: |
